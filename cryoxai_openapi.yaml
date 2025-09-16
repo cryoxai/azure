@@ -1,0 +1,239 @@
+openapi: 3.0.3
+info:
+  title: CryoX.ai Backend API
+  description: API for IoT data ingestion, shipment tracking, blockchain compliance, and analytics.
+  version: 1.0.1
+servers:
+  - url: https://api.cryox.ai/v1
+
+tags:
+  - name: Auth
+  - name: Devices
+  - name: Data
+  - name: Shipments
+  - name: Alerts
+  - name: Compliance
+  - name: Analytics
+  - name: Admin
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get a JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        '200':
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        '401':
+          description: Invalid credentials
+
+  /devices:
+    get:
+      tags: [Devices]
+      summary: List all devices for the tenant
+      responses:
+        '200':
+          description: List of devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Device"
+    post:
+      tags: [Devices]
+      summary: Register a new device
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCreate"
+      responses:
+        '201':
+          description: Device registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+
+  /data/ingest:
+    post:
+      tags: [Data]
+      summary: Ingest sensor data (batch)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DataIngest"
+      responses:
+        '202':
+          description: Data accepted
+        '400':
+          description: Invalid payload
+
+  /shipments:
+    get:
+      tags: [Shipments]
+      summary: List shipments
+      responses:
+        '200':
+          description: List of shipments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Shipment"
+    post:
+      tags: [Shipments]
+      summary: Create a shipment
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShipmentCreate"
+      responses:
+        '201':
+          description: Shipment created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Shipment"
+
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: List active alerts
+      responses:
+        '200':
+          description: List of alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Alert"
+
+  /compliance/ledger/{id}:
+    get:
+      tags: [Compliance]
+      summary: Get blockchain ledger for shipment
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Ledger entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LedgerEntry"
+
+  /analytics/energy:
+    get:
+      tags: [Analytics]
+      summary: Get energy usage analytics
+      responses:
+        '200':
+          description: Energy report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnergyReport"
+
+components:
+  schemas:
+    LoginRequest:
+      type: object
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+      required: [email, password]
+
+    AuthResponse:
+      type: object
+      properties:
+        token: { type: string }
+        expiresIn: { type: integer }
+
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string, enum: [sensor, fpga-node] }
+        status: { type: string, enum: [active, inactive] }
+
+    DeviceCreate:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string }
+        metadata: { type: object }
+
+    DataIngest:
+      type: object
+      properties:
+        deviceId: { type: string }
+        timestamp: { type: string, format: date-time }
+        values:
+          type: object
+          properties:
+            temperature: { type: number }
+            humidity: { type: number }
+            gps: { type: string }
+
+    Shipment:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        origin: { type: string }
+        destination: { type: string }
+        status: { type: string, enum: [created, in-transit, delivered] }
+
+    ShipmentCreate:
+      type: object
+      properties:
+        name: { type: string }
+        origin: { type: string }
+        destination: { type: string }
+        devices:
+          type: array
+          items: { type: string }
+
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        severity: { type: string, enum: [low, medium, high] }
+        message: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    LedgerEntry:
+      type: object
+      properties:
+        shipmentId: { type: string }
+        hash: { type: string }
+        timestamp: { type: string, format: date-time }
+
+    EnergyReport:
+      type: object
+      properties:
+        totalKWh: { type: number }
+        savingsPercent: { type: number }
+        baselineKWh: { type: number }
