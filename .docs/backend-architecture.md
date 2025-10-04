@@ -1,8 +1,8 @@
-# Cryox AI Backend Architecture - Detailed Design
+# Cryox AI Backend Architecture - Detailed Design (F# Implementation)
 
 ## **Backend Architecture Overview**
 
-The Cryox AI backend is built on Azure's cloud-native services, designed to handle massive scale, real-time processing, and compliance requirements for cold chain logistics.
+The Cryox AI backend is built on Azure's cloud-native services, designed to handle massive scale, real-time processing, and compliance requirements for cold chain logistics. This document provides F# implementation examples for all backend components.
 
 ## **Core Backend Components**
 
@@ -70,64 +70,151 @@ The Cryox AI backend is built on Azure's cloud-native services, designed to hand
 #### **2.1 Azure Functions (Serverless Processing)**
 
 **Temperature Processing Function:**
-```csharp
-[FunctionName("ProcessTemperatureData")]
-public static async Task Run(
-    [EventHubTrigger("temperature-data", Connection = "EventHubConnection")] 
-    EventData[] events,
-    [CosmosDB(databaseName: "cryox", collectionName: "temperature", 
-              ConnectionStringSetting = "CosmosDBConnection")] 
-    IAsyncCollector<dynamic> temperatureOutput,
-    ILogger log)
-{
-    foreach (EventData eventData in events)
-    {
-        var temperatureData = JsonConvert.DeserializeObject<TemperatureReading>(eventData.Body.Array);
-        
-        // Process temperature data
-        var processedData = await ProcessTemperatureReading(temperatureData);
-        
-        // Store in Cosmos DB
-        await temperatureOutput.AddAsync(processedData);
-        
-        // Check for anomalies
-        if (processedData.IsAnomaly)
-        {
-            await TriggerAlert(processedData);
-        }
-    }
+```fsharp
+open System
+open Microsoft.Azure.WebJobs
+open Microsoft.Azure.EventHubs
+open Microsoft.Azure.Cosmos
+open Newtonsoft.Json
+open System.Threading.Tasks
+
+type TemperatureReading = {
+    DeviceId: string
+    FacilityId: string
+    Timestamp: DateTime
+    Temperature: float
+    Humidity: float
+    Location: Location
+    IsAnomaly: bool
+    Confidence: float
 }
+
+type Location = {
+    Latitude: float
+    Longitude: float
+}
+
+type ProcessedTemperatureData = {
+    Id: string
+    DeviceId: string
+    FacilityId: string
+    Timestamp: DateTime
+    Temperature: float
+    Humidity: float
+    Location: Location
+    IsAnomaly: bool
+    Confidence: float
+    ProcessedAt: DateTime
+    Ttl: int
+}
+
+[<FunctionName("ProcessTemperatureData")>]
+let processTemperatureData 
+    ([<EventHubTrigger("temperature-data", Connection = "EventHubConnection")>] events: EventData[])
+    ([<CosmosDB(databaseName = "cryox", collectionName = "temperature", ConnectionStringSetting = "CosmosDBConnection")>] temperatureOutput: IAsyncCollector<ProcessedTemperatureData>)
+    (log: ILogger) =
+    task {
+        for eventData in events do
+            let! temperatureData = 
+                JsonConvert.DeserializeObjectAsync<TemperatureReading>(eventData.Body.Array)
+            
+            // Process temperature data
+            let! processedData = processTemperatureReading temperatureData
+            
+            // Store in Cosmos DB
+            do! temperatureOutput.AddAsync(processedData)
+            
+            // Check for anomalies
+            if processedData.IsAnomaly then
+                do! triggerAlert processedData
+    }
+
+let processTemperatureReading (reading: TemperatureReading) : Task<ProcessedTemperatureData> =
+    task {
+        // Add processing logic here
+        let processedData = {
+            Id = $"temp_{reading.DeviceId}_{reading.Timestamp:yyyyMMdd_HHmmss}"
+            DeviceId = reading.DeviceId
+            FacilityId = reading.FacilityId
+            Timestamp = reading.Timestamp
+            Temperature = reading.Temperature
+            Humidity = reading.Humidity
+            Location = reading.Location
+            IsAnomaly = reading.Temperature > 5.0 || reading.Temperature < -20.0
+            Confidence = reading.Confidence
+            ProcessedAt = DateTime.UtcNow
+            Ttl = 2592000 // 30 days
+        }
+        return processedData
+    }
+
+let triggerAlert (data: ProcessedTemperatureData) : Task =
+    task {
+        // Implement alert triggering logic
+        printfn $"Alert triggered for device {data.DeviceId} at {data.Timestamp}"
+    }
 ```
 
 **Alert Processing Function:**
-```csharp
-[FunctionName("ProcessAlerts")]
-public static async Task Run(
-    [EventHubTrigger("alert-data", Connection = "EventHubConnection")] 
-    EventData[] events,
-    [ServiceBus(queueName = "critical-alerts", Connection = "ServiceBusConnection")] 
-    IAsyncCollector<string> alertOutput,
-    ILogger log)
-{
-    foreach (EventData eventData in events)
-    {
-        var alert = JsonConvert.DeserializeObject<Alert>(eventData.Body.Array);
-        
-        // Process alert based on severity
-        switch (alert.Severity)
-        {
-            case "Critical":
-                await ProcessCriticalAlert(alert);
-                break;
-            case "Warning":
-                await ProcessWarningAlert(alert);
-                break;
-        }
-        
-        // Send to Service Bus for further processing
-        await alertOutput.AddAsync(JsonConvert.SerializeObject(alert));
-    }
+```fsharp
+open System
+open Microsoft.Azure.WebJobs
+open Microsoft.Azure.EventHubs
+open Microsoft.Azure.ServiceBus
+open Newtonsoft.Json
+open System.Threading.Tasks
+
+type Alert = {
+    AlertId: string
+    DeviceId: string
+    FacilityId: string
+    Severity: string
+    Message: string
+    Timestamp: DateTime
+    Temperature: float
+    Threshold: float
 }
+
+[<FunctionName("ProcessAlerts")>]
+let processAlerts 
+    ([<EventHubTrigger("alert-data", Connection = "EventHubConnection")>] events: EventData[])
+    ([<ServiceBus(queueName = "critical-alerts", Connection = "ServiceBusConnection")>] alertOutput: IAsyncCollector<string>)
+    (log: ILogger) =
+    task {
+        for eventData in events do
+            let! alert = 
+                JsonConvert.DeserializeObjectAsync<Alert>(eventData.Body.Array)
+            
+            // Process alert based on severity
+            match alert.Severity with
+            | "Critical" -> do! processCriticalAlert alert
+            | "Warning" -> do! processWarningAlert alert
+            | _ -> do! processInfoAlert alert
+            
+            // Send to Service Bus for further processing
+            do! alertOutput.AddAsync(JsonConvert.SerializeObject(alert))
+    }
+
+let processCriticalAlert (alert: Alert) : Task =
+    task {
+        // Implement critical alert processing
+        printfn $"CRITICAL ALERT: {alert.Message} for device {alert.DeviceId}"
+        // Send immediate notifications, escalate to on-call team, etc.
+    }
+
+let processWarningAlert (alert: Alert) : Task =
+    task {
+        // Implement warning alert processing
+        printfn $"WARNING: {alert.Message} for device {alert.DeviceId}"
+        // Log warning, send to monitoring dashboard
+    }
+
+let processInfoAlert (alert: Alert) : Task =
+    task {
+        // Implement info alert processing
+        printfn $"INFO: {alert.Message} for device {alert.DeviceId}"
+        // Log info, update status
+    }
 ```
 
 #### **2.2 Azure Stream Analytics**
@@ -229,45 +316,94 @@ GROUP BY deviceId, TumblingWindow(minute, 5)
 }
 ```
 
-**Data Models:**
+**F# Data Models:**
 
-**Temperature Reading:**
-```json
-{
-  "id": "temp_001_20241201_143022",
-  "deviceId": "temp_001",
-  "facilityId": "warehouse_001",
-  "timestamp": "2024-12-01T14:30:22Z",
-  "temperature": 2.5,
-  "humidity": 65.2,
-  "location": {
-    "latitude": 43.6532,
-    "longitude": -79.3832
-  },
-  "isAnomaly": false,
-  "confidence": 0.95,
-  "ttl": 2592000
+```fsharp
+open System
+open Newtonsoft.Json
+
+type TemperatureReading = {
+    [<JsonProperty("id")>]
+    Id: string
+    [<JsonProperty("deviceId")>]
+    DeviceId: string
+    [<JsonProperty("facilityId")>]
+    FacilityId: string
+    [<JsonProperty("timestamp")>]
+    Timestamp: DateTime
+    [<JsonProperty("temperature")>]
+    Temperature: float
+    [<JsonProperty("humidity")>]
+    Humidity: float
+    [<JsonProperty("location")>]
+    Location: Location
+    [<JsonProperty("isAnomaly")>]
+    IsAnomaly: bool
+    [<JsonProperty("confidence")>]
+    Confidence: float
+    [<JsonProperty("ttl")>]
+    Ttl: int
 }
-```
 
-**Device Status:**
-```json
-{
-  "id": "device_001",
-  "deviceId": "temp_001",
-  "facilityId": "warehouse_001",
-  "status": "online",
-  "lastSeen": "2024-12-01T14:30:22Z",
-  "batteryLevel": 85,
-  "signalStrength": -65,
-  "firmwareVersion": "1.2.3",
-  "configuration": {
-    "samplingRate": 30,
-    "alertThresholds": {
-      "temperatureHigh": 5.0,
-      "temperatureLow": -20.0
-    }
-  }
+type Location = {
+    [<JsonProperty("latitude")>]
+    Latitude: float
+    [<JsonProperty("longitude")>]
+    Longitude: float
+}
+
+type DeviceStatus = {
+    [<JsonProperty("id")>]
+    Id: string
+    [<JsonProperty("deviceId")>]
+    DeviceId: string
+    [<JsonProperty("facilityId")>]
+    FacilityId: string
+    [<JsonProperty("status")>]
+    Status: string
+    [<JsonProperty("lastSeen")>]
+    LastSeen: DateTime
+    [<JsonProperty("batteryLevel")>]
+    BatteryLevel: int
+    [<JsonProperty("signalStrength")>]
+    SignalStrength: int
+    [<JsonProperty("firmwareVersion")>]
+    FirmwareVersion: string
+    [<JsonProperty("configuration")>]
+    Configuration: DeviceConfiguration
+}
+
+type DeviceConfiguration = {
+    [<JsonProperty("samplingRate")>]
+    SamplingRate: int
+    [<JsonProperty("alertThresholds")>]
+    AlertThresholds: AlertThresholds
+}
+
+type AlertThresholds = {
+    [<JsonProperty("temperatureHigh")>]
+    TemperatureHigh: float
+    [<JsonProperty("temperatureLow")>]
+    TemperatureLow: float
+}
+
+type Alert = {
+    [<JsonProperty("alertId")>]
+    AlertId: string
+    [<JsonProperty("deviceId")>]
+    DeviceId: string
+    [<JsonProperty("facilityId")>]
+    FacilityId: string
+    [<JsonProperty("severity")>]
+    Severity: string
+    [<JsonProperty("message")>]
+    Message: string
+    [<JsonProperty("timestamp")>]
+    Timestamp: DateTime
+    [<JsonProperty("temperature")>]
+    Temperature: float
+    [<JsonProperty("threshold")>]
+    Threshold: float
 }
 ```
 
@@ -309,58 +445,80 @@ cryox-data-lake/
 
 #### **4.1 Azure Machine Learning**
 **ML Pipeline:**
-```python
-# Temperature Anomaly Detection Model
-from azureml.core import Workspace, Experiment, Dataset
-from azureml.train.automl import AutoMLConfig
+```fsharp
+open Microsoft.ML
+open Microsoft.ML.Data
+open System
+open System.Threading.Tasks
 
-# Load data from Cosmos DB
-dataset = Dataset.get_by_name(workspace, 'temperature-data')
+type TemperatureData = {
+    [<LoadColumn(0)>]
+    DeviceId: string
+    [<LoadColumn(1)>]
+    Temperature: float32
+    [<LoadColumn(2)>]
+    Humidity: float32
+    [<LoadColumn(3)>]
+    Timestamp: DateTime
+    [<LoadColumn(4)>]
+    IsAnomaly: bool
+}
 
-# Configure AutoML
-automl_config = AutoMLConfig(
-    task='classification',
-    primary_metric='accuracy',
-    training_data=dataset,
-    label_column_name='isAnomaly',
-    n_cross_validations=5,
-    max_concurrent_iterations=4,
-    max_cores_per_iteration=-1,
-    experiment_timeout_hours=2
-)
+type TemperaturePrediction = {
+    [<ColumnName("PredictedLabel")>]
+    PredictedLabel: bool
+    [<ColumnName("Score")>]
+    Score: float32
+}
 
-# Train model
-experiment = Experiment(workspace, 'temperature-anomaly-detection')
-run = experiment.submit(automl_config)
-```
+let createTemperatureAnomalyModel () =
+    let mlContext = MLContext()
+    
+    // Load data
+    let data = mlContext.Data.LoadFromTextFile<TemperatureData>("temperature-data.csv", hasHeader = true)
+    
+    // Define pipeline
+    let pipeline = 
+        mlContext.Transforms.Concatenate("Features", [|"Temperature"; "Humidity"|])
+        |> mlContext.Transforms.NormalizeMinMax("Features")
+        |> mlContext.BinaryClassification.Trainers.SdcaLogisticRegression()
+    
+    // Train model
+    let model = pipeline.Fit(data)
+    
+    // Create prediction engine
+    let predictionEngine = mlContext.Model.CreatePredictionEngine<TemperatureData, TemperaturePrediction>(model)
+    
+    model, predictionEngine
 
-**Model Deployment:**
-```python
-# Deploy model to AKS
-from azureml.core.webservice import AksWebservice, Webservice
-
-# Configure deployment
-aks_config = AksWebservice.deploy_configuration(
-    cpu_cores=2,
-    memory_gb=4,
-    enable_app_insights=True
-)
-
-# Deploy model
-service = Model.deploy(
-    workspace=ws,
-    name='temperature-anomaly-service',
-    models=[model],
-    inference_config=inference_config,
-    deployment_config=aks_config,
-    deployment_target=aks_target
-)
+let predictTemperatureAnomaly (predictionEngine: PredictionEngine<TemperatureData, TemperaturePrediction>) (data: TemperatureData) =
+    predictionEngine.Predict(data)
 ```
 
 #### **4.2 Azure Cognitive Services**
-- **Anomaly Detector**: Detect unusual patterns in temperature data
-- **Custom Vision**: Image analysis for equipment monitoring
-- **Text Analytics**: Process maintenance logs and reports
+```fsharp
+open System
+open System.Threading.Tasks
+open Microsoft.Azure.CognitiveServices.Vision.CustomVision.Prediction
+open Microsoft.Azure.CognitiveServices.Vision.CustomVision.Training
+
+type ImageAnalysisService = {
+    PredictionClient: CustomVisionPredictionClient
+    TrainingClient: CustomVisionTrainingClient
+}
+
+let createImageAnalysisService (endpoint: string) (predictionKey: string) (trainingKey: string) =
+    {
+        PredictionClient = CustomVisionPredictionClient(ApiKeyServiceClientCredentials(predictionKey))
+        TrainingClient = CustomVisionTrainingClient(ApiKeyServiceClientCredentials(trainingKey))
+    }
+
+let analyzeEquipmentImage (service: ImageAnalysisService) (imageBytes: byte[]) (projectId: Guid) (iterationName: string) =
+    task {
+        let! result = service.PredictionClient.ClassifyImageAsync(projectId, iterationName, imageBytes)
+        return result
+    }
+```
 
 ### **5. API Layer**
 
@@ -391,175 +549,235 @@ spec:
     - cors: enabled
 ```
 
-**API Endpoints:**
-```csharp
-[ApiController]
-[Route("api/v1/[controller]")]
-public class TemperatureController : ControllerBase
-{
-    [HttpGet("facilities/{facilityId}/temperature")]
-    public async Task<IActionResult> GetTemperatureData(
-        string facilityId,
-        [FromQuery] DateTime startTime,
-        [FromQuery] DateTime endTime,
-        [FromQuery] int pageSize = 100,
-        [FromQuery] string continuationToken = null)
-    {
-        // Implementation
-    }
-
-    [HttpGet("facilities/{facilityId}/alerts")]
-    public async Task<IActionResult> GetAlerts(
-        string facilityId,
-        [FromQuery] string severity = null,
-        [FromQuery] DateTime startTime = null,
-        [FromQuery] DateTime endTime = null)
-    {
-        // Implementation
-    }
-
-    [HttpPost("facilities/{facilityId}/devices/{deviceId}/configure")]
-    public async Task<IActionResult> ConfigureDevice(
-        string facilityId,
-        string deviceId,
-        [FromBody] DeviceConfiguration config)
-    {
-        // Implementation
-    }
-}
-```
-
 #### **5.2 Azure App Service**
-**Web API Application:**
-- **.NET 8 Web API** for backend services
-- **Swagger/OpenAPI** documentation
-- **Health checks** for monitoring
-- **Application Insights** integration
+**F# Web API Application:**
+```fsharp
+open System
+open System.Threading.Tasks
+open Microsoft.AspNetCore.Mvc
+open Microsoft.AspNetCore.Authorization
+open Microsoft.Extensions.Logging
+open Microsoft.Azure.Cosmos
+open Newtonsoft.Json
+
+[<ApiController>]
+[<Route("api/v1/[controller]")>]
+type TemperatureController(logger: ILogger<TemperatureController>, cosmosClient: CosmosClient) =
+    inherit ControllerBase()
+    
+    [<HttpGet("facilities/{facilityId}/temperature")>]
+    member this.GetTemperatureData
+        (facilityId: string)
+        ([<FromQuery>] startTime: DateTime option)
+        ([<FromQuery>] endTime: DateTime option)
+        ([<FromQuery>] pageSize: int option)
+        ([<FromQuery>] continuationToken: string option) =
+        task {
+            let pageSize = defaultArg pageSize 100
+            let startTime = defaultArg startTime DateTime.MinValue
+            let endTime = defaultArg endTime DateTime.MaxValue
+            
+            let container = cosmosClient.GetContainer("cryox", "temperature")
+            
+            let query = 
+                $"SELECT * FROM c WHERE c.facilityId = '{facilityId}' AND c.timestamp >= '{startTime:O}' AND c.timestamp <= '{endTime:O}' ORDER BY c.timestamp DESC"
+            
+            let queryRequestOptions = QueryRequestOptions(MaxItemCount = Nullable(pageSize))
+            
+            let! result = container.GetItemQueryIterator<TemperatureReading>(query, continuationToken, queryRequestOptions).ReadNextAsync()
+            
+            return Ok(result)
+        }
+    
+    [<HttpGet("facilities/{facilityId}/alerts")>]
+    member this.GetAlerts
+        (facilityId: string)
+        ([<FromQuery>] severity: string option)
+        ([<FromQuery>] startTime: DateTime option)
+        ([<FromQuery>] endTime: DateTime option) =
+        task {
+            let startTime = defaultArg startTime DateTime.MinValue
+            let endTime = defaultArg endTime DateTime.MaxValue
+            
+            let container = cosmosClient.GetContainer("cryox", "alerts")
+            
+            let severityFilter = 
+                match severity with
+                | Some s -> $" AND c.severity = '{s}'"
+                | None -> ""
+            
+            let query = 
+                $"SELECT * FROM c WHERE c.facilityId = '{facilityId}' AND c.timestamp >= '{startTime:O}' AND c.timestamp <= '{endTime:O}'{severityFilter} ORDER BY c.timestamp DESC"
+            
+            let! result = container.GetItemQueryIterator<Alert>(query).ReadNextAsync()
+            
+            return Ok(result)
+        }
+    
+    [<HttpPost("facilities/{facilityId}/devices/{deviceId}/configure")>]
+    member this.ConfigureDevice
+        (facilityId: string)
+        (deviceId: string)
+        ([<FromBody>] config: DeviceConfiguration) =
+        task {
+            let container = cosmosClient.GetContainer("cryox", "devices")
+            
+            let deviceConfig = {
+                Id = deviceId
+                DeviceId = deviceId
+                FacilityId = facilityId
+                Status = "online"
+                LastSeen = DateTime.UtcNow
+                BatteryLevel = 100
+                SignalStrength = -50
+                FirmwareVersion = "1.0.0"
+                Configuration = config
+            }
+            
+            let! result = container.UpsertItemAsync(deviceConfig)
+            
+            return Ok(result.Resource)
+        }
+```
 
 ### **6. Security & Compliance**
 
 #### **6.1 Azure Active Directory B2C**
-**Authentication Flow:**
-```csharp
-services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.Authority = "https://cryox.b2clogin.com/cryox.onmicrosoft.com/B2C_1_signupsignin";
-        options.Audience = "cryox-api";
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true
-        };
-    });
+**Authentication Configuration:**
+```fsharp
+open Microsoft.AspNetCore.Authentication.JwtBearer
+open Microsoft.AspNetCore.Builder
+open Microsoft.Extensions.DependencyInjection
+open Microsoft.IdentityModel.Tokens
+
+let configureAuthentication (services: IServiceCollection) =
+    services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(fun options ->
+            options.Authority <- "https://cryox.b2clogin.com/cryox.onmicrosoft.com/B2C_1_signupsignin"
+            options.Audience <- "cryox-api"
+            options.TokenValidationParameters <- TokenValidationParameters(
+                ValidateIssuer = true,
+                ValidateAudience = true,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true
+            )
+        ) |> ignore
 ```
 
 #### **6.2 Azure Key Vault**
 **Secrets Management:**
-```csharp
-public class KeyVaultService
-{
-    private readonly SecretClient _secretClient;
+```fsharp
+open System
+open System.Threading.Tasks
+open Azure.Security.KeyVault.Secrets
+open Azure.Identity
+
+type KeyVaultService(keyVaultUrl: string) =
+    let credential = DefaultAzureCredential()
+    let client = SecretClient(Uri(keyVaultUrl), credential)
     
-    public async Task<string> GetSecretAsync(string secretName)
-    {
-        var secret = await _secretClient.GetSecretAsync(secretName);
-        return secret.Value.Value;
-    }
+    member this.GetSecretAsync(secretName: string) =
+        task {
+            let! secret = client.GetSecretAsync(secretName)
+            return secret.Value.Value
+        }
     
-    public async Task SetSecretAsync(string secretName, string secretValue)
-    {
-        await _secretClient.SetSecretAsync(secretName, secretValue);
-    }
-}
+    member this.SetSecretAsync(secretName: string, secretValue: string) =
+        task {
+            let! secret = client.SetSecretAsync(secretName, secretValue)
+            return secret.Value
+        }
 ```
 
 #### **6.3 Azure Blockchain Service**
 **Blockchain Integration:**
-```csharp
-public class BlockchainService
-{
-    private readonly Web3 _web3;
+```fsharp
+open System
+open System.Threading.Tasks
+open Nethereum.Web3
+open Nethereum.Contracts
+
+type BlockchainService(web3: Web3, contractAddress: string, abi: string) =
+    let contract = web3.Eth.GetContract(abi, contractAddress)
+    let recordTemperatureFunction = contract.GetFunction("recordTemperature")
     
-    public async Task<string> RecordTemperatureReadingAsync(
-        string deviceId, 
-        decimal temperature, 
-        DateTime timestamp)
-    {
-        var contract = _web3.Eth.GetContract(abi, contractAddress);
-        var function = contract.GetFunction("recordTemperature");
-        
-        var transactionHash = await function.SendTransactionAsync(
-            accountAddress, 
-            deviceId, 
-            temperature, 
-            timestamp);
-            
-        return transactionHash;
-    }
-}
+    member this.RecordTemperatureReadingAsync(deviceId: string, temperature: decimal, timestamp: DateTime) =
+        task {
+            let! transactionHash = recordTemperatureFunction.SendTransactionAsync(deviceId, temperature, timestamp)
+            return transactionHash
+        }
+    
+    member this.GetTemperatureHistoryAsync(deviceId: string, startTime: DateTime, endTime: DateTime) =
+        task {
+            let getHistoryFunction = contract.GetFunction("getTemperatureHistory")
+            let! result = getHistoryFunction.CallAsync<obj>(deviceId, startTime, endTime)
+            return result
+        }
 ```
 
 ### **7. Monitoring & Observability**
 
 #### **7.1 Azure Application Insights**
 **Custom Telemetry:**
-```csharp
-public class TemperatureService
-{
-    private readonly TelemetryClient _telemetryClient;
+```fsharp
+open System
+open System.Threading.Tasks
+open Microsoft.ApplicationInsights
+open Microsoft.ApplicationInsights.DataContracts
+
+type TemperatureService(telemetryClient: TelemetryClient) =
     
-    public async Task ProcessTemperatureAsync(TemperatureReading reading)
-    {
-        using var operation = _telemetryClient.StartOperation<DependencyTelemetry>("ProcessTemperature");
-        
-        try
-        {
-            // Process temperature
-            await ProcessTemperature(reading);
+    member this.ProcessTemperatureAsync(reading: TemperatureReading) =
+        task {
+            use operation = telemetryClient.StartOperation<DependencyTelemetry>("ProcessTemperature")
             
-            _telemetryClient.TrackEvent("TemperatureProcessed", new Dictionary<string, string>
-            {
-                ["DeviceId"] = reading.DeviceId,
-                ["FacilityId"] = reading.FacilityId,
-                ["Temperature"] = reading.Temperature.ToString()
-            });
+            try
+                // Process temperature
+                do! this.ProcessTemperature(reading)
+                
+                let properties = dict [
+                    "DeviceId", reading.DeviceId
+                    "FacilityId", reading.FacilityId
+                    "Temperature", reading.Temperature.ToString()
+                ]
+                
+                telemetryClient.TrackEvent("TemperatureProcessed", properties)
+            with
+            | ex -> 
+                telemetryClient.TrackException(ex)
+                reraise()
         }
-        catch (Exception ex)
-        {
-            _telemetryClient.TrackException(ex);
-            throw;
+    
+    member private this.ProcessTemperature(reading: TemperatureReading) =
+        task {
+            // Implement temperature processing logic
+            printfn $"Processing temperature {reading.Temperature} for device {reading.DeviceId}"
         }
-    }
-}
 ```
 
 #### **7.2 Azure Monitor**
 **Custom Metrics:**
-```csharp
-public class MetricsService
-{
-    private readonly MetricCollector _metricCollector;
+```fsharp
+open System
+open Microsoft.ApplicationInsights
+open Microsoft.ApplicationInsights.Metrics
+
+type MetricsService(telemetryClient: TelemetryClient) =
     
-    public void RecordTemperatureAnomaly(string facilityId, string deviceId)
-    {
-        _metricCollector.TrackMetric("TemperatureAnomalies", 1, new Dictionary<string, string>
-        {
-            ["FacilityId"] = facilityId,
-            ["DeviceId"] = deviceId
-        });
-    }
+    member this.RecordTemperatureAnomaly(facilityId: string, deviceId: string) =
+        let properties = dict [
+            "FacilityId", facilityId
+            "DeviceId", deviceId
+        ]
+        
+        telemetryClient.TrackMetric("TemperatureAnomalies", 1.0, properties)
     
-    public void RecordEnergySavings(string facilityId, decimal savings)
-    {
-        _metricCollector.TrackMetric("EnergySavings", savings, new Dictionary<string, string>
-        {
-            ["FacilityId"] = facilityId
-        });
-    }
-}
+    member this.RecordEnergySavings(facilityId: string, savings: decimal) =
+        let properties = dict [
+            "FacilityId", facilityId
+        ]
+        
+        telemetryClient.TrackMetric("EnergySavings", float savings, properties)
 ```
 
 ### **8. Data Pipeline Architecture**
@@ -618,4 +836,4 @@ Data Lake → Power BI → Reports
 - **CDN**: Static content, API responses
 - **Cosmos DB**: Built-in caching for read-heavy workloads
 
-This backend architecture provides a robust, scalable, and secure foundation for Cryox AI's cold chain optimization platform, leveraging Azure's comprehensive cloud services for maximum efficiency and reliability.
+This F# backend architecture provides a robust, scalable, and secure foundation for Cryox AI's cold chain optimization platform, leveraging Azure's comprehensive cloud services with functional programming principles for maximum efficiency and reliability.
